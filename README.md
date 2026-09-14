@@ -1,169 +1,149 @@
-# CS5344 Group Project — Longitudinal Data RUL Prediction Challenge
+# CS5344 Group Project — Tabular Data Augmentation for Anomaly Detection
 
-Predicting **binned Remaining Useful Life (RUL)** from longitudinal (time-indexed
-tabular) asset data, evaluated with a **cost-sensitive** metric on two datasets:
-SCANIA Component X and Backblaze hard drives.
+Designing a **tabular data augmentation/generation method** that produces
+normal-only synthetic data to improve downstream anomaly detection, evaluated
+on two network-security datasets: NSL-KDD and UNSW-NB15.
 
 ## Background
 
-**Longitudinal data** is tabular data with a time dimension: the same sample is
-tracked at multiple points in time, so each record combines a rich feature set
-with temporal progression.
+**Anomaly detection** finds data points that deviate from the expected
+"normal" pattern — used in fraud detection, industrial monitoring, network
+attack detection, and more. Tabular anomalies come in different flavours,
+e.g. an **odd value** (a single value far outside its usual range) or a
+**rare combination** (individually normal values that co-occur unusually).
 
-**Remaining Useful Life (RUL)** is how much time is left before an asset fails or
-must be replaced. Predicting failures early reduces unplanned downtime, avoids
-emergency repairs, and allows maintenance to be scheduled efficiently.
+**Why augmentation?** Well-designed synthetic normal data can sharpen a
+detector's normal/abnormal boundary, fill out a distribution when real
+(especially normal) data is scarce, and let sensitive data (e.g. attack logs)
+be shared without exposing real records.
 
 ## Problem Formulation
 
-### Assets and longitudinal readouts
+### Data
 
-We observe a fleet of assets. Each asset `i` has:
+A labeled tabular dataset `(D, y)` with `n` samples, each with `m` feature
+columns (numerical or categorical) and a binary label `y_i ∈ {0, 1}`
+(`0` = normal, `1` = abnormal). The dataset is split by rows into disjoint
+`(D_train, y_train)`, `(D_valid, y_valid)`, `(D_test, y_test)`. Only
+`train.csv` is released to participants; `valid.csv`/`test.csv` stay private.
 
-- **static specifications** `s_i` (optional metadata), and
-- a **variable-length sequence of operational readouts**
-  `R_i = {(t_i,1, x_i,1), …, (t_i,Li, x_i,Li)}`, where `Li` varies per asset,
-  `t_i,k` is a dataset-specific timestamp and `x_i,k` is the feature vector
-  measured at that time.
-
-### Event time and RUL
-
-Let `T_i` be the failure/event time of asset `i` (component replacement time,
-drive failure date). Remaining useful life at time `t` is
+Abnormal rows belong to a specific anomaly type (attack category). The types
+are partitioned into three disjoint groups `A_seen`, `A_val`, `A_test`, such
+that:
 
 ```
-RUL_i(t) = max(T_i − t, 0)
+types in D_train  =  A_seen
+types in D_valid   =  A_seen ∪ A_val
+types in D_test    =  A_seen ∪ A_val ∪ A_test
 ```
 
-In real logs many assets do not fail within the observation window; those cases
-are **right-censored** (`T_i` unknown).
+So the training set only shows anomaly types participants can observe in
+advance; validation adds unseen-during-training types; test further adds
+types never seen in training or validation. The anomaly-type label itself is
+used only internally by organizers to build/score the splits — it is not
+released and not part of `x_i`.
 
-### Binned ordinal labels
+### Task
 
-Instead of regressing continuous RUL, it is discretised into `m + 1` ordered
-bins using thresholds `0 < τ0 < … < τm`. At a *randomly selected* current time
-`t_i^cur` the label `y ∈ {0, …, m}` is
-
-```
-y_i = m      if 0 < RUL_i(t_i^cur) ≤ τ0
-      m − 1  if τ0 < RUL_i(t_i^cur) ≤ τ1
-      …
-      0      if RUL_i(t_i^cur) > τm
-```
-
-Higher `y` means more urgent. Right-censored assets get `y = 0`, interpreted as
-"not expected to fail within the short-term horizon `τm`" given the available
-evidence.
-
-### Objective
-
-Given an asset's static specifications `s_i` and its full history `R_i` up to the
-randomly selected time `t_i^cur`, predict the binned RUL class:
+Using the released `(D_train, y_train)` (both features and labels may be
+used), design a generation/augmentation method that produces a fixed-size,
+**normal-only** synthetic dataset:
 
 ```
-f(s_i, R_i) → ŷ_i ∈ {0, …, m}
+D̃ = {x̃_i}, i = 1..N
 ```
+
+`N` is a fixed submission size. The submission contains only generated
+feature vectors — no labels.
+
+### Downstream evaluation
+
+Each submitted `D̃` is used to train a **fixed set of anomaly detectors**
+under a training scheme controlled by the organizers:
+
+- **ECOD** — deterministic tail/rank detector
+- **IForest** — 10 fixed seeds x 500 trees
+
+Same settings for every team. The trained detectors score the private
+validation/test rows (higher score = more abnormal), and performance is
+measured with **AUPRC** (Area Under the Precision-Recall Curve):
+
+```
+S = (AUPRC_ECOD + AUPRC_IForest) / 2
+```
+
+The objective is **downstream utility** — synthetic normal data that helps
+the fixed detectors separate normal from abnormal hidden samples — not
+faithful reproduction of the training distribution.
 
 ## Datasets
 
-### SCANIA Component X
+### NSL-KDD
 
-5 classes (`m = 4`), time unit as given in the dataset:
+Refined version of the KDD Cup 1999 network intrusion dataset. Each row is
+one network connection; features describe connection properties (duration,
+byte counts, protocol, …). Attacks span many types (e.g. `neptune` SYN-flood
+DoS, `ipsweep` probing/surveillance).
 
-| Class | RUL range | |
-|---|---|---|
-| 0 | > 48 | safe |
-| 1 | (24, 48] | warning |
-| 2 | (12, 24] | warning |
-| 3 | (6, 12] | warning |
-| 4 | (0, 6] | urgent |
+- `m = 41` features: 38 numerical + 3 categorical (`protocol_type`,
+  `service`, `flag`).
+- Feature groups: **basic** connection features, **content** features
+  (suspicious-behaviour indicators within a connection), **traffic** features
+  (computed over a 2-second window for the same host/service, or over the
+  preceding 100 connections for `dst_host_*`).
+- Only `train.csv` is released; `valid.csv`/`test.csv` are private.
 
-Two tables:
+> Tavallaee, M., Bagheri, E., Lu, W., & Ghorbani, A. A. (2009). *A detailed
+> analysis of the KDD CUP 99 data set.* IEEE CISDA.
 
-- **Specifications** — `vehicle_id`, `Spec_0 … Spec_7` (categorical, e.g. `Cat0`,
-  `Cat1`, …).
-- **Operational readouts** — `vehicle_id`, `time_step`, plus many numeric sensor
-  columns (`171_0`, `666_0`, `427_0`, `837_0`, `167_0 … 167_9`, `309_0`, …).
+### UNSW-NB15
 
-> Lindgren, T., Steinert, O., Andersson Reyna, O., Kharazian, Z., & Magnússon, S.
-> (2024). *SCANIA Component X Dataset: A Real-World Multivariate Time Series
-> Dataset for Predictive Maintenance* (Version 2) [Data set]. Scania CV AB.
-> https://doi.org/10.5878/jvb5-d390
+Generated with the IXIA PerfectStorm tool at the Cyber Range Lab of UNSW
+Canberra. Each row is one network flow; features describe flow properties
+(packet counts, TCP window size, connection state, …). Attacks span several
+categories (e.g. `Generic` block-cipher attack, `DoS`).
 
-### Backblaze
+- `m = 42` features: 39 numerical + 3 categorical (`proto`, `service`,
+  `state`; `-` in `service` means not a well-known service).
+- Only `train.csv` is released; `valid.csv`/`test.csv` are private.
 
-A large-scale hard-drive reliability dataset with daily SMART statistics.
-3 classes (`m = 2`), unit = days:
+> Moustafa, N., & Slay, J. (2015). *UNSW-NB15: a comprehensive data set for
+> network intrusion detection systems.* MilCIS.
 
-| Class | RUL range | |
-|---|---|---|
-| 0 | ≥ 21 | safe |
-| 1 | [11, 20] | warning |
-| 2 | ≤ 10 | urgent |
+## Evaluation & Leaderboard
 
-Columns: `date`, `serial_number`, `model`, `capacity_bytes`, `failure`, and
-`smart_*_normalized` / `smart_*_raw` pairs.
+- **Public leaderboard** (during the competition): scored on hidden
+  *validation* rows, feedback shown immediately, used for development.
+- **Private leaderboard** (after the competition): scored on hidden *test*
+  rows, hidden during the competition, determines final ranking. Test rows
+  may include anomaly types never seen in training or validation — don't
+  overfit to the public leaderboard.
 
-- **Train set** — records of failed drives from the start date to the failure date.
-- **Test / validation set** — records of drives from the start date to the
-  prediction date.
-
-> https://www.backblaze.com/b2/hard-drive-test-data.html
-
-## Evaluation
-
-Scoring is **cost-sensitive**:
-
-```
-Total_cost = Σ (confusion_matrix ⊙ cost_matrix)      # lower is better
-```
-
-Mistakes are not equal — a **missed / late alarm** costs far more than an
-**early alarm / unnecessary check**.
-
-**SCANIA** (rows = actual, cols = predicted):
-
-|  | 0 `>48` | 1 `(24,48]` | 2 `(12,24]` | 3 `(6,12]` | 4 `(0,6]` |
-|---|---|---|---|---|---|
-| **0** `>48` | 0 | 20 | 30 | 40 | 50 |
-| **1** `(24,48]` | 200 | 0 | 20 | 30 | 40 |
-| **2** `(12,24]` | 300 | 200 | 0 | 20 | 30 |
-| **3** `(6,12]` | 400 | 300 | 200 | 0 | 20 |
-| **4** `(0,6]` | 500 | 400 | 300 | 200 | 0 |
-
-**Backblaze**:
-
-|  | 0 `≥21` | 1 `[11,20]` | 2 `≤10` |
-|---|---|---|---|
-| **0** `≥21` | 0 | 1 | 3 |
-| **1** `[11,20]` | 4 | 0 | 2 |
-| **2** `≤10` | 15 | 5 | 0 |
-
-### Cost fluctuation and robustness
-
-In real predictive maintenance costs are not fixed — labour, downtime penalties,
-spare parts and logistics all change, so the "true" cost matrix is uncertain and
-approximate. The hidden test set **may perturb the cost matrix by ±5–10%** to
-simulate this. The goal is a method that is robust, not one tuned to a single
-exact cost table.
+Kaggle rank is evidence, not a direct grade conversion. Overall grading
+(project component = 60% of module grade: proposal 15%, presentation 20%,
+report 25%) also weighs method novelty/transferability, explainability and
+robustness, experiment quality, writing/presentation, and code
+reproducibility.
 
 ## Rules & Constraints
 
-- **One transferable pipeline.** A single model pipeline must work for *both*
-  datasets. Two completely different pipelines are not allowed; different
-  *parameter settings* per dataset within the same pipeline are fine.
-- **No test data.** Both datasets are public, so similar test data may exist
-  online. Do **not** download test data, and never use it for training or
-  tuning — this is treated as cheating.
-- **Reproducibility.** The pipeline must reproduce the results submitted to
-  Kaggle.
+- **One transferable pipeline.** A single generation pipeline must work for
+  *both* datasets; parameter settings may differ per dataset, but forked
+  code paths or dataset-specific models are not allowed.
+- **Normal-only, fixed-size submission.** `D̃` must contain exclusively
+  synthetic samples meant to represent the normal class, at exactly `N` rows,
+  with no labels included.
+- **Deep learning is allowed**, but the method's distributional properties
+  and how it produces them must be clearly explainable — this is graded.
+- **Reproducibility.** Submit source code after the competition ends so
+  results can be reproduced end to end.
 - Kaggle allows a **limited number of submissions per day**.
 
 ## Team
 
-- Adis
-- Hans
-- Raphs
+- Han Teng
+- Adi
+- Raph
 
 ## Repo Structure
 
@@ -173,7 +153,8 @@ exact cost table.
 │   ├── raw/            # untouched downloads (gitignored)
 │   └── processed/      # derived features / splits (gitignored)
 ├── src/                # shared pipeline code
-├── Project_Briefing.pdf
+├── CS5344_Project_Briefing_2627Sem1.pdf                    # gitignored
+├── CS5344_anomaly_detection_problem_formulation.pdf        # gitignored
 ├── CLAUDE.md
 └── README.md
 ```
