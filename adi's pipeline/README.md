@@ -8,12 +8,12 @@ Normal-only synthetic data for the CS5344 anomaly-detection augmentation task
 ```bash
 pip install -r requirements.txt                    # Python ≥ 3.8, scikit-learn ≥ 1.0
 pip install pyod ctgan                             # optional: exact PyOD ECOD, CTGAN generator
-python pipeline15.py                               # MODE = "final" (default)
+python pipeline16.py                               # MODE = "final" (default)
 ```
 
 Put `train_NSL-KDD.csv` and `train_UNSW-NB15.csv` in the repo's `data/raw/` (gitignored), or next
 to the script. Run from inside this folder (`cd "adi's pipeline"`).
-Outputs (in `pipeline15_output/`):
+Outputs (in `pipeline16_output/`):
 
 | File | Rows |
 |---|---|
