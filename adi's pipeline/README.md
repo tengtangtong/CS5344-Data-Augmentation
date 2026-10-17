@@ -1,4 +1,4 @@
-# Adi's pipeline — Pipeline 15: Over-generate → Trim → Sculpt → Range-spread
+# Adi's pipeline — Pipeline 16: Over-generate → Trim → Sculpt → Range-spread
 
 Normal-only synthetic data for the CS5344 anomaly-detection augmentation task
 (NSL-KDD and UNSW-NB15). One transferable pipeline; only per-dataset settings differ.
