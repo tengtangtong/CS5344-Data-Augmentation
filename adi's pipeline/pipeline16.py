@@ -1,5 +1,5 @@
 # =====================================================================
-# PIPELINE 15 — Over-generate → Trim → Sculpt
+# PIPELINE 16 — Over-generate → Trim → Sculpt
 # Normal-only synthetic data for fixed ECOD + IForest detectors
 #
 #   released train.csv (normal + seen anomalies)
@@ -68,7 +68,7 @@ warnings.filterwarnings("ignore")
 # 1. CONFIGURATION
 # =====================================================================
 LABEL = "is_anomaly"
-OUTDIR = Path("pipeline15_output")
+OUTDIR = Path("pipeline16_output")
 
 MODE = "final"             # "final"    → ONE submission per dataset with the
                            #              Kaggle-validated configuration (below)
