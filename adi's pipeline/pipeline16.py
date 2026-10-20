@@ -68,7 +68,7 @@ warnings.filterwarnings("ignore")
 # 1. CONFIGURATION
 # =====================================================================
 LABEL = "is_anomaly"
-OUTDIR = Path("pipeline16_output")
+OUTDIR = Path("pipeline15_output")
 
 MODE = "final"             # "final"    → ONE submission per dataset with the
                            #              Kaggle-validated configuration (below)
@@ -123,6 +123,10 @@ DEFAULTS = dict(
     stratified=True,          # trim within each categorical tuple
     sculpt="sir",             # none | quota | sir
     trim_baseline=False,      # baseline = plain donor-seed (no trimming)
+    pool_members=None,        # pooled ensemble, e.g. ["vae", "vae#1", "vae#2"] or ["vae", "gmm"]
+    anchor_frac=0.0,          # IForest anchors: this fraction of rows carry the real-normal MAX
+    anchor_keep=8,            #   on every column except the anchor_keep most informative ones
+    tilt_plan=None,           # {column: kappa}: v = Q_real(u^kappa) per column (seen-type exploit)
     spread=False,             # range-spreading of weak heavy-tailed columns
     spread_delta=0.15,        #   column is "weak" if |AUC(normal vs anomaly) − 0.5| < delta
     spread_skew=3.0,          #   and "heavy-tailed" if skewness on normals > this
@@ -138,7 +142,9 @@ PER_DATASET = {                    # per-dataset overrides (chosen on the local 
     "NSL-KDD": dict(),
     # Kaggle public: 0.52515 → 0.54466 with range-spreading (κ=2) + classifier-only trim score
     # Kaggle: spread δ=0.20 (20 cols) 0.50276 < δ=0.15 (15) 0.54466 < δ=0.10 (7 cols) 0.55045
-    "UNSW-NB15": dict(anom_model="loto", scorer="clf", spread=True, spread_kappa=2.0, spread_delta=0.10),
+    # Kaggle ablation (pipeline16 table): spread_kappa 2 → 4 raised UNSW 0.55527 → 0.55788
+    # same-pool Kaggle κ ladder: κ=4 0.55102 → κ=6 0.55427 → κ=50 0.56135
+    "UNSW-NB15": dict(anom_model="loto", scorer="clf", spread=True, spread_kappa=50.0, spread_delta=0.10),
 }
 
 VAE_HIDDEN, VAE_LR, VAE_BATCH = 128, 1e-3, 256
@@ -196,9 +202,7 @@ SEP = "␟"   # tuple-key separator (never appears in the data)
 # 2. DATA + SMALL HELPERS
 # =====================================================================
 def load_data(cfg):
-    for p in [Path(cfg["filename"]), BASE_DIR / cfg["filename"],
-              BASE_DIR / "data" / "raw" / cfg["filename"],              # repo convention
-              BASE_DIR.parent / "data" / "raw" / cfg["filename"]]:
+    for p in [Path(cfg["filename"]), BASE_DIR / cfg["filename"]]:
         if p.exists():
             df = pd.read_csv(p)
             break
@@ -990,6 +994,9 @@ def prepare(gen_name, normal_raw, abnormal, feats, nums, cats, dataset, S, seed,
         return ctx
 
     ctx["col_stats"] = column_stats(normal, abnormal, spec)
+    yy = np.r_[np.zeros(len(normal)), np.ones(len(abnormal))]
+    ctx["auc_all"] = {c: (roc_auc_score(yy, np.r_[normal[c].to_numpy(float), abnormal[c].to_numpy(float)])
+                          if normal[c].nunique() > 1 else 0.5) for c in spec["gen_nums"]}
     am = AnomalyModel().fit(normal, abnormal, feats, cats, seed, mode=S["anom_model"])
     p = am.p_normal_oof
     ctx["prefiltered_removed"] = 0
@@ -1016,28 +1023,46 @@ def prepare(gen_name, normal_raw, abnormal, feats, nums, cats, dataset, S, seed,
     ctx["p"] = p
     w = weights_for(p, S)
 
-    fit_key = (gen_name, S["curate"], S["derived"], S["anom_model"], S["prefilter_p"],
-               S.get("prefilter_frac"), seed) + \
-        tuple(S[k] for k in GEN_FIT_KEYS[gen_name])
-    if gen_cache is not None and fit_key in gen_cache:
-        gen = gen_cache[fit_key]
-    else:
-        if verbose:
-            print("      fitting {} …".format(gen_name), flush=True)
-        gen = make_generator(gen_name, S).fit(normal, spec, w, seed)
-        if gen_cache is not None:
-            gen_cache[fit_key] = gen
-    if gen_name == "vae":
-        gen.sampling, gen.w = S["vae_sampling"], w * len(w)
-    if gen_name == "ctgan":
-        gen.conditional = S["ctgan_conditional"]
+    # ---- generator(s): one generator, or a POOLED ENSEMBLE of members.
+    # A member is "<gen>" or "<gen>#k" (k = extra seed offset), e.g.
+    # ["vae", "vae#1", "vae#2"] (seed ensemble) or ["vae", "gmm", "ctgan"].
+    members = S.get("pool_members") or [gen_name]
+    gens = []
+    for m in members:
+        gname, _, k = m.partition("#")
+        mseed = seed + 1000 * int(k or 0)
+        if gname == "ctgan" and not ctgan_available():
+            print("      [pool] ctgan not installed — member skipped", flush=True)
+            continue
+        fit_key = (gname, S["curate"], S["derived"], S["anom_model"], S["prefilter_p"],
+                   S.get("prefilter_frac"), mseed) + tuple(S[kk] for kk in GEN_FIT_KEYS[gname])
+        if gen_cache is not None and fit_key in gen_cache:
+            g = gen_cache[fit_key]
+        else:
+            if verbose:
+                print("      fitting {} (seed {}) …".format(gname, mseed), flush=True)
+            g = make_generator(gname, S).fit(normal, spec, w, mseed)
+            if gen_cache is not None:
+                gen_cache[fit_key] = g
+        if gname == "vae":
+            g.sampling, g.w = S["vae_sampling"], w * len(w)
+        if gname == "ctgan":
+            g.conditional = S["ctgan_conditional"]
+        gens.append(g)
+    gen = gens[0]
     ctx["gen"] = gen
 
     og = overgen_max or S["overgen"]
     quotas = make_quotas(ctx["keys_real"], w, n_target)
     counts = {t: max(MIN_CANDIDATES, int(og * q)) for t, q in quotas.items()}
     rng = np.random.default_rng(seed + 11)
-    pool = postprocess(gen.sample(counts, rng), spec)
+    if len(gens) == 1:
+        pool = postprocess(gen.sample(counts, rng), spec)
+    else:   # each member contributes an equal share of every tuple's candidates
+        share = {t: max(MIN_CANDIDATES, int(math.ceil(c / len(gens)))) for t, c in counts.items()}
+        raws = [g.sample(share, rng)[spec["cats"] + spec["gen_nums"]] for g in gens]
+        pool = postprocess(pd.concat(raws, ignore_index=True), spec)
+        pool = pool.iloc[rng.permutation(len(pool))].reset_index(drop=True)
     ctx["pool"] = pool
     ctx["pool_keys"] = tuple_key(pool, cats)
     ctx["pos_by_key"] = pd.Series(np.arange(len(pool))).groupby(ctx["pool_keys"]).apply(np.array).to_dict()
@@ -1120,12 +1145,84 @@ def finalize(ctx, S, n_target, seed):
 
 
 def _maybe_spread(syn, ctx, S, info):
-    if not S.get("spread") or "col_stats" not in ctx:
-        info["spread_cols"] = []
-        return syn
-    cols = spread_columns(ctx["col_stats"], S, ctx["spec"])
-    info["spread_cols"] = cols
-    return apply_spread(syn, ctx["spec"], cols, S["spread_kappa"])[ctx["spec"]["feats"]]
+    spec = ctx["spec"]
+    info["spread_cols"] = []
+    if S.get("spread") and "col_stats" in ctx:
+        cols = spread_columns(ctx["col_stats"], S, spec)
+        info["spread_cols"] = cols
+        syn = apply_spread(syn, spec, cols, S["spread_kappa"])[spec["feats"]]
+    if S.get("tilt_plan"):
+        syn = apply_tilt(syn, ctx, S["tilt_plan"])
+        info["tilt_cols"] = sorted(S["tilt_plan"])
+    if S.get("anchor_frac", 0) > 0 and "auc_all" in ctx:
+        syn = apply_anchors(syn, ctx, S, info)
+    return syn
+
+
+def apply_tilt(syn, ctx, plan):
+    """Quantile tilt v = Q_real(u^kappa): rank-preserving, values stay real-normal values."""
+    out = syn.copy()
+    for c, k in plan.items():
+        if c not in out or float(k) == 1.0:
+            continue
+        q = np.sort(ctx["normal"][c].to_numpy(float))
+        u = (rankdata(out[c].to_numpy(float), method="average") - 0.5) / len(out)
+        out[c] = q[np.clip((u ** float(k) * len(q)).astype(int), 0, len(q) - 1)]
+    return restore_derived(out, ctx["spec"])[ctx["spec"]["feats"]]
+
+
+def apply_anchors(syn, ctx, S, info):
+    """A small set of rows carries the real-normal maximum on every weak column at once.
+    IForest's uniform thresholds on those columns then mostly peel off just these rows
+    (≈ one wasted split), so it effectively ignores the weak columns, while ECOD's ECDFs
+    barely move (anchor_frac of mass). All values stay inside the real-normal range."""
+    spec = ctx["spec"]
+    auc = ctx["auc_all"]
+    order = sorted(auc, key=lambda c: -abs(auc[c] - 0.5))
+    weak = order[int(S.get("anchor_keep", 8)):]
+    out = syn.copy()
+    rows = np.random.default_rng(ctx["seed"] + 77).random(len(out)) < float(S["anchor_frac"])
+    for c in weak:
+        out.loc[rows, c] = spec["ranges"][c][1]
+    info["anchor_rows"], info["anchor_cols"] = int(rows.sum()), weak
+    return restore_derived(out, spec)[spec["feats"]]
+
+
+def learn_tilt_plan(df, feats, nums, cats, name, S, seed, n_proxy=20000, kappas=(0.33, 0.5, 2.0, 3.0),
+                    passes=2, val_frac=0.3, verbose=True):
+    """Coordinate ascent over per-column tilt exponents, maximising (ECOD + IForest)
+    AUPRC on a held-out SEEN-type validation split of the released data. Exploits the
+    seen attack types (public-board oriented) — measured private-side risk: unseen types ↓."""
+    rng = np.random.default_rng(seed)
+    vm = rng.random(len(df)) < val_frac
+    fit, val = df[~vm], df[vm]
+    n = fit[fit[LABEL] == 0][feats].reset_index(drop=True)
+    a = fit[fit[LABEL] == 1][feats].reset_index(drop=True)
+    ctx = prepare("vae", n, a, feats, nums, cats, name, S, seed, n_proxy, overgen_max=20)
+    base, _ = finalize(ctx, dict(S, tilt_plan=None, anchor_frac=0.0), n_proxy, seed)
+    yv = val[LABEL].to_numpy()
+
+    def sc(syn):
+        A, B = encode(syn, val, nums, cats, "onehot")
+        return (average_precision_score(yv, ecod_scores(A, B)) +
+                average_precision_score(yv, iforest_scores(A, B, 2, 100))) / 2
+    derived = [d["target"] for d in ctx["spec"]["derived"]]
+    cols = [c for c in nums if c not in derived and ctx["normal"][c].nunique() > 2]
+    plan, best = {}, sc(base)
+    if verbose:
+        print("      tilt: start val S={:.4f}".format(best), flush=True)
+    for p in range(passes):
+        for c in cols:
+            for k in kappas:
+                if plan.get(c, 1.0) == k:
+                    continue
+                trial = dict(plan, **{c: k})
+                s_ = sc(apply_tilt(base, ctx, trial))
+                if s_ > best + 0.001:
+                    best, plan = s_, trial
+        if verbose:
+            print("      tilt: pass {} val S={:.4f}  ({} columns tilted)".format(p + 1, best, len(plan)), flush=True)
+    return plan
 
 
 # =====================================================================
@@ -1169,7 +1266,7 @@ def proxy_eval(gen_name, df, feats, nums, cats, cfg, S, n_splits, gen_cache=None
 
 def run_generate(cfg):
     name, cats = cfg["name"], cfg["cats"]
-    print("\n" + "=" * 78 + "\nPIPELINE 15 [generate] — " + name + "\n" + "=" * 78)
+    print("\n" + "=" * 78 + "\nPIPELINE 16 [generate] — " + name + "\n" + "=" * 78)
     df, feats, nums = load_data(cfg)
     normal_all = df[df[LABEL] == 0][feats].reset_index(drop=True)
     abnormal_all = df[df[LABEL] == 1][feats].reset_index(drop=True)
@@ -1225,7 +1322,7 @@ def run_ablate(cfg):
     if not scores:
         raise ValueError("Fill KAGGLE_SCORES['{}'] with the public scores first.".format(name))
     best_gen = max(scores, key=scores.get)
-    print("\n" + "=" * 78 + "\nPIPELINE 15 [ablate] — {}   best Kaggle generator: {} ({:.5f})".format(
+    print("\n" + "=" * 78 + "\nPIPELINE 16 [ablate] — {}   best Kaggle generator: {} ({:.5f})".format(
         name, best_gen, scores[best_gen]) + "\n" + "=" * 78)
     pf = OUTDIR / "{}_generate_proxy.csv".format(name)
     if pf.exists() and len(scores) >= 3:
@@ -1341,7 +1438,7 @@ def run_final(cfg):
     name, cats = cfg["name"], cfg["cats"]
     g = FINAL_GENERATOR[name]
     S = settings_for(name)
-    print("\n" + "=" * 78 + "\nPIPELINE 15 [final] — {}  generator={}".format(name, g) + "\n" + "=" * 78)
+    print("\n" + "=" * 78 + "\nPIPELINE 16 [final] — {}  generator={}".format(name, g) + "\n" + "=" * 78)
     print("settings:", {k: S[k] for k in ["curate", "derived", "anom_model", "gamma", "overgen", "keep_frac",
                                           "scorer", "sculpt", "spread", "spread_delta", "spread_kappa"]})
     t0 = time.time()
@@ -1392,7 +1489,7 @@ def _prepare_key(S):
 
 def run_trim_ablation(cfg):
     name, cats = cfg["name"], cfg["cats"]
-    print("\n" + "=" * 78 + "\nPIPELINE 15 [trim_ablation] — " + name + "\n" + "=" * 78)
+    print("\n" + "=" * 78 + "\nPIPELINE 16 [trim_ablation] — " + name + "\n" + "=" * 78)
     df, feats, nums = load_data(cfg)
     n_all = df[df[LABEL] == 0][feats].reset_index(drop=True)
     a_all = df[df[LABEL] == 1][feats].reset_index(drop=True)
