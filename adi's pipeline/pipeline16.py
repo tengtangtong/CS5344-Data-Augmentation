@@ -68,7 +68,7 @@ warnings.filterwarnings("ignore")
 # 1. CONFIGURATION
 # =====================================================================
 LABEL = "is_anomaly"
-OUTDIR = Path("pipeline15_output")
+OUTDIR = Path("pipeline16_output")
 
 MODE = "final"             # "final"    → ONE submission per dataset with the
                            #              Kaggle-validated configuration (below)
