@@ -68,7 +68,7 @@ warnings.filterwarnings("ignore")
 # 1. CONFIGURATION
 # =====================================================================
 LABEL = "is_anomaly"
-OUTDIR = Path("pipeline16_output")
+OUTDIR = Path("pipeline16_output_final_use this")
 
 MODE = "final"             # "final"    → ONE submission per dataset with the
                            #              Kaggle-validated configuration (below)
@@ -79,7 +79,7 @@ MODE = "final"             # "final"    → ONE submission per dataset with the
                            #              (over-generated candidates) vs both vs none
 
 # Generator used by MODE="final" (best public score per dataset)
-FINAL_GENERATOR = {"NSL-KDD": "vae", "UNSW-NB15": "vae"}
+FINAL_GENERATOR = {"NSL-KDD": "baseline", "UNSW-NB15": "vae"}
 FAST = False               # True = quick smoke test (tiny epochs / sizes)
 
 # !! target_n MUST equal the submission size required by the Kaggle page !!
@@ -1562,7 +1562,7 @@ def main():
     OUTDIR.mkdir(parents=True, exist_ok=True)
     for cfg in DATASETS:
         if MODE == "final":
-            run_final(cfg)
+            run_final(cfg)3
         elif MODE == "trim_ablation":
             run_trim_ablation(cfg)
         elif MODE == "generate":
@@ -1575,3 +1575,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
