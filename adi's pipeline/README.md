@@ -1,4 +1,4 @@
-# Adi's pipeline — Pipeline 16: Over-generate → Trim → Sculpt → Range-spread
+# Pipeline 16 — Over-generate → Trim → Sculpt → Range-spread (+ pooled ensemble)
 
 Normal-only synthetic data for the CS5344 anomaly-detection augmentation task
 (NSL-KDD and UNSW-NB15). One transferable pipeline; only per-dataset settings differ.
@@ -6,14 +6,13 @@ Normal-only synthetic data for the CS5344 anomaly-detection augmentation task
 ## Run
 
 ```bash
-pip install -r requirements.txt                    # Python ≥ 3.8, scikit-learn ≥ 1.0
+pip install numpy pandas scipy scikit-learn        # required (Python ≥ 3.8, scikit-learn ≥ 1.0)
 pip install pyod ctgan                             # optional: exact PyOD ECOD, CTGAN generator
 python pipeline16.py                               # MODE = "final" (default)
 ```
 
-Put `train_NSL-KDD.csv` and `train_UNSW-NB15.csv` in the repo's `data/raw/` (gitignored), or next
-to the script. Run from inside this folder (`cd "adi's pipeline"`).
-Outputs (in `pipeline16_output/`):
+Put `train_NSL-KDD.csv` and `train_UNSW-NB15.csv` next to the script.
+Outputs (in `pipeline15_output/`):
 
 | File | Rows |
 |---|---|
@@ -22,6 +21,60 @@ Outputs (in `pipeline16_output/`):
 | `<dataset>_final_metadata.json` | settings, SHA-256, derived/spread columns |
 
 Runtime on a laptop CPU: roughly 5–10 min per dataset. Fully seeded and deterministic.
+
+## Pipeline 16 changes (from the Kaggle ablation)
+
+| Kaggle result | Change in pipeline 16 |
+|---|---|
+| UNSW VAE + spread κ=2: 0.55527 → κ=4: **0.55788** | UNSW default `spread_kappa = 4.0` |
+| "Greedy combined" configs (γ=128, pre-filter, sculpt=none, derived off): 0.518–0.547 | not adopted; those factors stay at defaults |
+| NSL-KDD: baseline 0.9294, VAE 0.92923–0.92960, GMM 0.92818, CTGAN 0.92473, baseline ablations 0.92905–0.9294 | all within run-to-run noise; NSL-KDD defaults unchanged |
+| Same UNSW configuration scored 0.55045 and 0.55527 on two machines | run-to-run noise ≈ ±0.005 → new **pooled ensemble** option to reduce it |
+
+**Pooled ensemble** (`pool_members`): several generators or seeds each contribute an equal share of
+every category tuple's candidates *before* trimming, so trimming and sculpting choose from a more
+diverse pool. Members are written `"<gen>"` or `"<gen>#k"` (seed offset k), e.g.
+`pool_members=["vae", "vae#1", "vae#2"]`. Locally (UNSW, 2 splits): VAE seed pool +0.001 / +0.001;
+VAE + GMM pool −0.005 / −0.006 (not recommended).
+
+Full Kaggle generator comparison (MODE="generate", pipeline 16 defaults):
+
+| | NSL-KDD | UNSW-NB15 |
+|---|---|---|
+| baseline tuple donor-seed | 0.9294 | 0.43321 |
+| VAE | 0.92923 | 0.55527 |
+| GMM | 0.92818 | 0.5344 |
+| CTGAN | 0.92473 | 0.54311 |
+
+### Detector-aware options added after the κ sweep (all off by default)
+
+| Option | What it does | Local evidence (UNSW, held-out test) |
+|---|---|---|
+| `anchor_frac=0.005, anchor_keep=8` | 0.5% of rows carry the real-normal maximum on every column except the 8 most informative; IForest's uniform thresholds on those columns then mostly peel off just these rows, so it effectively ignores weak columns while ECOD's ECDFs barely move | +0.003 / +0.007 overall; seen and unseen both up |
+| `tilt_plan={col: κ}` | per-column quantile tilt v = Q_real(u^κ), learned by `learn_tilt_plan()` (coordinate ascent on ECOD+IForest AUPRC over a seen-type validation split) | seen types +0.029, unseen −0.05, overall −0.008 → public-board oriented, private-board risk |
+| greedy keep/spread/const per column | (prototype, not kept) | overall −0.004 |
+
+Kaggle κ sweep (same candidate pool): κ=4 0.55102 → κ=6 0.55427.
+
+## Final submissions (Kaggle-validated)
+
+| Dataset | File (`MODE="final"`) | Configuration | Public score |
+|---|---|---|---|
+| NSL-KDD | `submission_NSL-KDD_final.csv` | VAE, trim 90% (classifier + realism), sculpt, no spreading | **0.92960** |
+| UNSW-NB15 | `submission_UNSW-NB15_final.csv` | VAE, leave-one-type-out anomaly model, trim 90% (classifier), sculpt, range-spread 7 count columns with κ = 50 | **0.56135** |
+
+UNSW κ ladder (same candidate pool, 7 columns, δ = 0.10):
+
+| κ | Share of spread values at column minimum | Public score |
+|---|---|---|
+| 4 | 11% | 0.55102 |
+| 6 | – | 0.55427 |
+| **50** | 87% | **0.56135** |
+| 100 | 92% | 0.56049 |
+| 1000 | 99% | 0.56103 |
+
+Column count at κ = 50: 5 columns 0.55422, **7 columns 0.56135**, 15 columns 0.53118.
+NSL-KDD spreading of the 6 count columns at κ = 20: 0.92932 (no gain over 0.92960).
 
 ## Stages
 
