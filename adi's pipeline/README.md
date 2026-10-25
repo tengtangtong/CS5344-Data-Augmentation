@@ -1,9 +1,86 @@
-# Pipeline 16 — Over-generate → Trim → Sculpt → Range-spread (+ pooled ensemble)
+# Adi's pipeline — normal-only synthetic data for fixed ECOD + IForest
+
+Pipelines 16 and 17 for the CS5344 augmentation task (NSL-KDD and UNSW-NB15).
+One codebase for both datasets; only a few per-dataset settings differ.
+
+## Final submissions
+
+| Dataset | Pipeline | Public AUPRC | How to reproduce |
+|---|---|---|---|
+| NSL-KDD | Pipeline 16 | 0.92960 (VAE) / 0.92940 (baseline) | `python pipeline16.py` |
+| UNSW-NB15 | Pipeline 17, exact ECOD scorer | **0.57409** | `P17_DATASETS=UNSW-NB15 python pipeline17.py` |
+
+`pipeline16.py` here generates NSL-KDD with the baseline generator (`FINAL_GENERATOR`); set it to
+`"vae"` for the 0.92960 file. The two are within the ±0.005 leaderboard noise.
+
+## Quick start
+
+```bash
+pip install -r requirements.txt
+# put train_NSL-KDD.csv and train_UNSW-NB15.csv (from data/) next to the scripts
+python pipeline16.py                                  # Pipeline 16 finals → pipeline16_output_final_use this/
+python pipeline17.py                                  # Pipeline 17 finals → pipeline17_output/
+P17_MODE=final+evaluate python pipeline17.py          # + honest P16-vs-P17 comparison on held-out types
+P17_FAST=1 python pipeline17.py                       # 2-minute smoke test
+```
+
+Pipeline 17 environment options: `P17_MODE` (`final` | `evaluate` | `final+evaluate`),
+`P17_DATASETS` (e.g. `UNSW-NB15`), `P17_OUT` (output folder), `P17_ECOD` (`pyod` default | `old`).
+Runtime for `final+evaluate` on a 2-core laptop: about 10 min (NSL-KDD) and 15 min (UNSW-NB15).
+Everything is seeded; validation and test rows are never used.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `pipeline16.py` | Over-generate → trim → sculpt → range-spread (details below) |
+| `pipeline17.py` | Imports Pipeline 16; adds behaviour-based held-out types, learned per-column shaping with an unseen-type penalty, joint selection for both detectors, and the exact PyOD ECOD scorer |
+| `p17_robustness.py` | Scores a learned Pipeline 17 plan on further held-out splits: `python p17_robustness.py UNSW-NB15 3 4` |
+| `check_ecod_rule.py` | Shows the ECOD scorer bug: ranks Kaggle-scored files with the old and the exact rule (needs those CSVs locally) |
+| `exp_twopoint.py` | Experiment: two-point neutralising under the old scorer (mixed result) |
+| `exp_categories.py` | Experiment: category-frequency reshaping (no gain) |
+| `gen_overfit.py` | The three probes tuned to known attack types (Kaggle 0.55279 / 0.54161 / 0.55386: no gain) |
+| `results/` | Pipeline 17 metadata: learned plans, learning logs, held-out-type evaluation |
+
+## Pipeline 17 in brief
+
+1. **Behaviour-based held-out types.** Anomalies are described by volume, direction, timing,
+   rate counters, error counters, TTL/window and connection type (generic column-name patterns,
+   both datasets), clustered (4–10 groups by silhouette), and the most unusual groups are held out.
+   Learning splits and the evaluation split hide different groups.
+2. **Learned per-column shaping.** Coordinate ascent chooses off, κ = 4, κ = 50 or two-point
+   (half the rows at the real minimum, half at the maximum) for each weak, many-valued, unbounded
+   column. Objective: J = ½(S_seen + S_novel) − λ·max(0, ΔS_seen − ΔS_novel), λ = 1; a change must
+   raise J by > 0.002 without lowering held-out-type AUPRC by > 0.002.
+3. **Joint selection for both detectors.** Harm surrogates (per-column likelihood ratio for ECOD,
+   random-split ExtraTrees for IForest) swap harmful rows for safer candidates. Never adopted so far.
+4. **Exact ECOD scorer.** PyOD scores each column as max(U_skew, max(U_l, U_r)). Our earlier
+   stand-in used max(U_skew, (U_l + U_r)/2). On 12 Kaggle-scored UNSW files the exact rule
+   (one-hot) ranks them with Spearman +0.83 against the public score; the old rule gave −0.19.
+5. **Tie-safe spreading.** Minimum ranks keep a large tied block (e.g. 91% zeros) at the minimum.
+
+Learned plans (exact scorer):
+
+- UNSW-NB15: two-point on `spkts`, `dbytes`, `response_body_len`; κ = 50 on `dpkts`, `sbytes`,
+  `sloss`, `ct_src_dport_ltm`; κ = 4 on `dloss`, `dtcpb`, `ct_dst_src_ltm`.
+- NSL-KDD: two-point on `hot`, `num_file_creations`, `num_compromised`, `duration`; κ = 50 on `srv_count`.
+
+| Run | Held-out-type AUPRC, local (P16 → P17) | UNSW public | NSL public |
+|---|---|---|---|
+| Pipeline 16 | – | 0.56335 | 0.92960 |
+| Pipeline 17, old ECOD rule | UNSW 0.389 → 0.493; NSL 0.890 → 0.897 | 0.56447 | 0.92938 |
+| Pipeline 17, exact ECOD rule | UNSW 0.383 → 0.488; NSL 0.883 → 0.920 | **0.57409** | 0.92364 |
+
+NSL-KDD is saturated: every reshaping we tried lowered its public score, so it stays on Pipeline 16.
+
+---
+
+## Pipeline 16 — Over-generate → Trim → Sculpt → Range-spread (+ pooled ensemble)
 
 Normal-only synthetic data for the CS5344 anomaly-detection augmentation task
 (NSL-KDD and UNSW-NB15). One transferable pipeline; only per-dataset settings differ.
 
-## Run
+### Run
 
 ```bash
 pip install numpy pandas scipy scikit-learn        # required (Python ≥ 3.8, scikit-learn ≥ 1.0)
@@ -22,7 +99,7 @@ Outputs (in `pipeline15_output/`):
 
 Runtime on a laptop CPU: roughly 5–10 min per dataset. Fully seeded and deterministic.
 
-## Pipeline 16 changes (from the Kaggle ablation)
+### Pipeline 16 changes (from the Kaggle ablation)
 
 | Kaggle result | Change in pipeline 16 |
 |---|---|
@@ -56,7 +133,7 @@ Full Kaggle generator comparison (MODE="generate", pipeline 16 defaults):
 
 Kaggle κ sweep (same candidate pool): κ=4 0.55102 → κ=6 0.55427.
 
-## Final submissions (Kaggle-validated)
+### Final submissions (Kaggle-validated)
 
 | Dataset | File (`MODE="final"`) | Configuration | Public score |
 |---|---|---|---|
@@ -76,7 +153,7 @@ UNSW κ ladder (same candidate pool, 7 columns, δ = 0.10):
 Column count at κ = 50: 5 columns 0.55422, **7 columns 0.56135**, 15 columns 0.53118.
 NSL-KDD spreading of the 6 count columns at κ = 20: 0.92932 (no gain over 0.92960).
 
-## Stages
+### Stages
 
 1. **Curation** — drop real normals whose 10 nearest labelled neighbours are mostly anomalies (ENN).
 2. **Derived-feature flow** — audit row-local identities on real normals (≥95% agreement);
@@ -99,7 +176,7 @@ NSL-KDD spreading of the 6 count columns at κ = 20: 0.92932 (no gain over 0.929
 8. **Validate** — exact schema, row count, no NaN, no invented categories or category tuples,
    values inside the real-normal range, no exact copies of real rows.
 
-## Kaggle public scores behind the final settings
+### Kaggle public scores behind the final settings
 
 | Dataset | Configuration | Public score |
 |---|---|---|
@@ -114,7 +191,7 @@ NSL-KDD spreading of the 6 count columns at κ = 20: 0.92932 (no gain over 0.929
 | UNSW-NB15 | VAE + spread δ=0.15 (15 cols) | 0.54466 |
 | UNSW-NB15 | **VAE + spread δ=0.10 (7 cols) (final)** | **0.55045** |
 
-## Trim-placement ablation (`MODE = "trim_ablation"`)
+### Trim-placement ablation (`MODE = "trim_ablation"`)
 
 The anomaly classifier is always trained on the released labelled data (real normals vs
 `is_anomaly`). This mode varies **where** its P(anomaly) removes rows:
@@ -147,7 +224,7 @@ Local proxy (1 split, full-size pipeline):
 Only 0.34% of NSL-KDD normals have P(anomaly) > 0.01, so pre-trimming there removes ordinary
 normals; on UNSW about a fifth of normals look attack-like, so pre-trimming removes real overlap.
 
-## Other modes
+### Other modes
 
 - `MODE = "generate"` — writes baseline / VAE / CTGAN / GMM candidates per dataset plus local
   proxy scores (CTGAN needs `pip install ctgan`).
@@ -155,7 +232,7 @@ normals; on UNSW about a fifth of normals look attack-like, so pre-trimming remo
   ablation on a local proxy (3 splits, pseudo-unseen anomaly types held out) and exports the top
   configurations.
 
-## Known failure modes (for the report)
+### Known failure modes (for the report)
 
 - Range-spreading helps only on columns that carry no attack signal; spreading bounded
   error-rate fractions (NSL-KDD) or timing columns (UNSW δ=0.20) lowered the public score.

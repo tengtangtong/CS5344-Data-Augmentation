@@ -1562,7 +1562,7 @@ def main():
     OUTDIR.mkdir(parents=True, exist_ok=True)
     for cfg in DATASETS:
         if MODE == "final":
-            run_final(cfg)3
+            run_final(cfg)
         elif MODE == "trim_ablation":
             run_trim_ablation(cfg)
         elif MODE == "generate":
