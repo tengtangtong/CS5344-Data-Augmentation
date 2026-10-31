@@ -1218,7 +1218,7 @@ p1 = sys.modules[__name__]
 # P3-1. CONFIGURATION (Pipeline 2 learning + Pipeline 3 critic)
 # =====================================================================
 MODE = os.environ.get("P3_MODE", "final")   # "final" | "evaluate" | "final+evaluate"
-OUTDIR = Path(os.environ.get("P3_OUT", "final_pipeline3_output"))
+OUTDIR = Path(os.environ.get("P3_OUT", "final_pipeline3_output_group13"))
 
 # ONE pipeline for both datasets; per-dataset hyperparameters only (chosen on the Kaggle public board).
 # Pipeline 1 settings (anomaly model, trimming score, spreading) come from pipeline1.PER_DATASET.
@@ -1252,7 +1252,7 @@ OUTDIR = Path(os.environ.get("P3_OUT", "final_pipeline3_output"))
 UNSW_PLAN_0_57760 = {"spkts": -1.0, "dpkts": -1.0, "sbytes": 50.0, "dbytes": -1.0, "dloss": 50.0,
                      "response_body_len": -1.0, "ct_src_dport_ltm": 50.0, "stcpb": -1.0}
 PER_DATASET_3 = {
-    "NSL-KDD": dict(generator="vae", learn_shaping=False, critic="default", scorer="clf+lr", dedupe=True),
+    "NSL-KDD": dict(generator="vae", learn_shaping=False, critic="default", scorer="clf+real", dedupe=True),
     "UNSW-NB15": dict(generator="vae", learn_shaping=True, plan=UNSW_PLAN_0_57760, critic="default",
                       scorer="clf+lr", dedupe=True),
 }
