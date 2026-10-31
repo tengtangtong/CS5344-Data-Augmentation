@@ -1,4 +1,4 @@
-# CS5344 Group Project â€” Tabular Data Augmentation for Anomaly Detection
+# CS5344 Group Project ” Tabular Data Augmentation for Anomaly Detection"
 
 Designing a **tabular data augmentation/generation method** that produces
 normal-only synthetic data to improve downstream anomaly detection, evaluated
