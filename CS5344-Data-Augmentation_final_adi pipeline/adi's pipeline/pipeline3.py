@@ -27,6 +27,7 @@
 #   anomaly model     standard 5-fold            leave-one-type-out (behaviour types)
 #   trimming score    P(anomaly) + realism       P(anomaly), HistGB and LR rank-averaged
 #   learn_shaping     off                        on
+#   generator         vae                        vae      (option: baseline | gmm | ctgan, P3_GENERATOR)
 #   critic            default                    default
 #   trimming critic   HistGB                     HistGB + logistic regression (scorer clf+lr)
 #   dedupe            on                         on
@@ -39,6 +40,8 @@
 #                                                        (the Kaggle-scored 0.92960 / 0.57760 files)
 #        P3_CRITIC=strong python pipeline3.py       -> regularised-critic variant
 #        P3_SCORER=clf python pipeline3.py          -> HistGB-only critic (UNSW 0.57409)
+#        P3_GENERATOR="NSL-KDD=baseline" python pipeline3.py -> untrimmed donor-seed baseline for NSL-KDD
+#        P3_RELEARN=1 python pipeline3.py           -> re-learn the UNSW κ plan instead of the frozen one
 #        P3_MODE=final+evaluate python pipeline3.py -> + Pipeline 1 vs 3 on held-out attack types
 #        P3_DATASETS=UNSW-NB15 ...  P3_OUT=folder ...  P3_FAST=1 (smoke test)
 # Requires: numpy pandas scipy scikit-learn (Python >= 3.8). Seeded and deterministic.
@@ -1215,8 +1218,7 @@ p1 = sys.modules[__name__]
 # P3-1. CONFIGURATION (Pipeline 2 learning + Pipeline 3 critic)
 # =====================================================================
 MODE = os.environ.get("P3_MODE", "final")   # "final" | "evaluate" | "final+evaluate"
-OUTDIR = Path(os.environ.get("P3_OUT", "pipeline3_output"))
-GENERATOR = {"NSL-KDD": "vae", "UNSW-NB15": "vae"}   # Pipeline 2 needs a trimmed generator (not the baseline)
+OUTDIR = Path(os.environ.get("P3_OUT", "final_pipeline3_output"))
 
 # ONE pipeline for both datasets; per-dataset hyperparameters only (chosen on the Kaggle public board).
 # Pipeline 1 settings (anomaly model, trimming score, spreading) come from pipeline1.PER_DATASET.
@@ -1234,10 +1236,48 @@ GENERATOR = {"NSL-KDD": "vae", "UNSW-NB15": "vae"}   # Pipeline 2 needs a trimme
 #                   with P3_SCORER=lr | clf+lr | ...
 #   dedupe        : replace exact duplicate rows and copies of real normals with the next-best unused
 #                   trimmed candidates of the same category tuple.
+#   generator     : "vae" | "baseline" | "gmm" | "ctgan" (ctgan needs `pip install ctgan`).
+#                   "baseline" = the tuple donor-seed generator WITHOUT trimming (Pipeline 1 MODE=generate);
+#                   set trim_baseline=True in PER_DATASET to trim it like the other generators.
+#                   Kaggle public: NSL-KDD vae 0.92960 vs baseline 0.92940 (within ±0.005 noise);
+#                   UNSW-NB15 vae 0.55527 vs baseline 0.43321 (same Pipeline 1 settings).
+#                   Override with P3_GENERATOR=baseline (all datasets) or
+#                   P3_GENERATOR="NSL-KDD=baseline,UNSW-NB15=vae".
+#                   The untrimmed baseline cannot be combined with learn_shaping (it has no candidate pool).
+#   plan          : frozen per-column shaping plan (κ per column; -1 = two-point). When set, the final run
+#                   applies it directly instead of re-learning it. Re-learning depends on KMeans behaviour
+#                   clusters and VAE draws, which change with CPU, BLAS and library versions, so the learned
+#                   plan (and the score) differ between machines. The UNSW plan below is the one learned in
+#                   the Kaggle-scored run (0.57760). P3_RELEARN=1 learns a new plan instead.
+UNSW_PLAN_0_57760 = {"spkts": -1.0, "dpkts": -1.0, "sbytes": 50.0, "dbytes": -1.0, "dloss": 50.0,
+                     "response_body_len": -1.0, "ct_src_dport_ltm": 50.0, "stcpb": -1.0}
 PER_DATASET_3 = {
-    "NSL-KDD": dict(learn_shaping=False, critic="default", scorer=None, dedupe=True),
-    "UNSW-NB15": dict(learn_shaping=True, critic="default", scorer="clf+lr", dedupe=True),
+    "NSL-KDD": dict(generator="vae", learn_shaping=False, critic="default", scorer="clf+lr", dedupe=True),
+    "UNSW-NB15": dict(generator="vae", learn_shaping=True, plan=UNSW_PLAN_0_57760, critic="default",
+                      scorer="clf+lr", dedupe=True),
 }
+
+
+def generator_for(name):
+    """Per-dataset generator: PER_DATASET_3[name]["generator"], overridable with P3_GENERATOR."""
+    gen = PER_DATASET_3.get(name, {}).get("generator", "vae")
+    env = os.environ.get("P3_GENERATOR", "").strip()
+    if env:
+        if "=" in env:
+            for part in env.split(","):
+                k, _, v = part.partition("=")
+                if k.strip() == name and v.strip():
+                    gen = v.strip()
+        else:
+            gen = env
+    if gen not in ("vae", "baseline", "gmm", "ctgan"):
+        raise ValueError("unknown generator {!r} for {}".format(gen, name))
+    if gen == "ctgan" and not ctgan_available():
+        raise ImportError("generator 'ctgan' needs `pip install ctgan`")
+    return gen
+
+
+GENERATOR = {cfg["name"]: generator_for(cfg["name"]) for cfg in DATASETS}
 CRITIC_PRESETS = {
     "default": {},
     "strong": dict(max_depth=2, l2_regularization=10.0, min_samples_leaf=200),
@@ -1341,7 +1381,10 @@ FAST = os.environ.get("P3_FAST") == "1"   # quick smoke test: P3_FAST=1 python p
 P3 = dict(
     behaviour_loto=True,            # A: leave-one-type-out critic uses behaviour types
     learn_kappa=True,               # C: learned per-column κ
-    joint_select=True,              # B: joint subset selection for ECOD + IForest
+    joint_select=os.environ.get("P3_JOINT", "0") == "1",   # B: joint subset selection for ECOD + IForest.
+                                    # Off by default: never adopted on Kaggle (ρ = 0 in every scored run);
+                                    # on another machine it switched on (ρ = 0.35, 35% of rows swapped)
+                                    # and the public score fell to 0.56936. P3_JOINT=1 re-enables it.
     n_learn_splits=1 if FAST else 2,
     learn_n=4000 if FAST else 20000,            # synthetic rows per learning run
     hidden_share=0.25,              # target share of anomalies held out as pseudo-novel
@@ -1819,11 +1862,20 @@ def run_final(cfg, L=None):
     t0 = time.time()
     df, feats, nums = load_data(cfg)
     learn_on = PER_DATASET_3.get(name, {}).get("learn_shaping", True)
+    normal_all = df[df[LABEL] == 0][feats].reset_index(drop=True)
+    abnormal_all = df[df[LABEL] == 1][feats].reset_index(drop=True)
+    if gen == "baseline" and not S["trim_baseline"]:
+        if learn_on:
+            raise ValueError("{}: the untrimmed baseline has no candidate pool to learn a shaping plan on; "
+                             "set learn_shaping=False or trim_baseline=True".format(name))
+        return run_final_plain_baseline(cfg, S, critic, normal_all, abnormal_all, feats, nums, cats, t0)
+    frozen = PER_DATASET_3.get(name, {}).get("plan")
+    if L is None and learn_on and frozen is not None and os.environ.get("P3_RELEARN", "0") != "1":
+        print("  using the frozen κ plan (set P3_RELEARN=1 to learn it again): {}".format(frozen), flush=True)
+        L = dict(plan=dict(frozen), alpha=0.5, rho=0.0, base=None, best=None, log=[], behaviour=[])
     if L is None and learn_on:
         print("  learning κ plan and joint selection on behaviour splits …", flush=True)
         L = learn(df, feats, nums, cats, name, S, gen, cfg["seed"] + 7)
-    normal_all = df[df[LABEL] == 0][feats].reset_index(drop=True)
-    abnormal_all = df[df[LABEL] == 1][feats].reset_index(drop=True)
     print("  fitting on all released rows …", flush=True)
     ctx = prepare_plus(gen, normal_all, abnormal_all, feats, nums, cats, name, S, cfg["seed"], cfg["target_n"], verbose=True)
     final, kept, fb = select_indices(ctx, S, cfg["target_n"], cfg["seed"])
@@ -1854,6 +1906,45 @@ def run_final(cfg, L=None):
     (OUTDIR / "{}_p3_metadata.json".format(name)).write_text(json.dumps(meta, indent=2, default=str))
     print("  saved → {}  rows={:,}  κ plan={}  α={} ρ={} ({:,} rows swapped)  copies={:.2%}".format(
         path.name, len(syn), L["plan"], L["alpha"], L["rho"], n_sw, copies))
+    return meta
+
+
+def run_final_plain_baseline(cfg, S, critic, normal_all, abnormal_all, feats, nums, cats, t0, max_rounds=10):
+    """Generator = untrimmed tuple donor-seed baseline: per-tuple quotas from the real normals,
+    donor-seed interpolation, post-processing (Pipeline 1 finalize), then duplicate removal by
+    re-sampling the affected tuples."""
+    name = cfg["name"]
+    ctx = prepare("baseline", normal_all, abnormal_all, feats, nums, cats, name, S, cfg["seed"], cfg["target_n"])
+    syn, _ = finalize(ctx, S, cfg["target_n"], cfg["seed"])
+    n_dup = 0
+    if PER_DATASET_3.get(name, {}).get("dedupe", True):
+        rng = np.random.default_rng(cfg["seed"] + 101)
+        real = set(pd.util.hash_pandas_object(normal_all[feats], index=False))
+        for _ in range(max_rounds):
+            h = pd.util.hash_pandas_object(syn[feats], index=False)
+            bad = np.where(h.duplicated().to_numpy() | h.isin(real).to_numpy())[0]
+            if len(bad) == 0:
+                break
+            n_dup += len(bad)
+            counts = pd.Series(tuple_key(syn.iloc[bad], cats)).value_counts().to_dict()
+            new = postprocess(ctx["gen"].sample(counts, rng), ctx["spec"])
+            new_keys = tuple_key(new, cats)
+            bad_keys = tuple_key(syn.iloc[bad], cats)
+            for t in counts:                       # put each replacement back in its own tuple's slot
+                slots = bad[bad_keys == t]
+                rows = new[new_keys == t].iloc[:len(slots)]
+                for c in feats:
+                    syn.loc[slots, c] = rows[c].to_numpy()
+        print("  dedupe: {} duplicate / real-copy rows replaced".format(n_dup), flush=True)
+    copies = validate(syn, normal_all, feats, cats, cfg["target_n"])
+    path = OUTDIR / "submission_{}_p3.csv".format(name)
+    sha = save_submission(syn, path)
+    meta = dict(dataset=name, generator="baseline", file=path.name, rows=len(syn), exact_copy_rate=copies,
+                sha256=sha, minutes=round((time.time() - t0) / 60, 1), settings=S, p3=P3, critic=critic,
+                rows_deduplicated=n_dup, duplicate_rows_left=int(syn.duplicated().sum()),
+                derived=[d["target"] for d in ctx["spec"]["derived"]])
+    (OUTDIR / "{}_p3_metadata.json".format(name)).write_text(json.dumps(meta, indent=2, default=str))
+    print("  saved → {}  rows={:,}  generator=baseline (untrimmed)  copies={:.2%}".format(path.name, len(syn), copies))
     return meta
 
 
