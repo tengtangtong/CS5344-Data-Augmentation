@@ -1,0 +1,11 @@
+ipykernel==7.3.0
+matplotlib==3.11.2
+nbformat==5.11.1
+numpy==2.5.3
+pandas==3.0.5
+pyod==3.6.6
+pypdf==6.15.0
+scikit-learn==1.9.1
+scipy==1.18.1
+seaborn==0.13.2
+torch==2.14.1
