@@ -1,4 +1,4 @@
-# Adi's pipeline -- normal-only synthetic data for fixed ECOD + IForest
+# Adi's pipeline - normal-only synthetic data for fixed ECOD + IForest
 
 Final code for the CS5344 augmentation task (NSL-KDD and UNSW-NB15). **One pipeline,
 `pipeline3.py`, produces both submissions**; only a few per-dataset hyperparameters differ.
