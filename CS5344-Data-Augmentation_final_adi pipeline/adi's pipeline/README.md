@@ -3,10 +3,13 @@
 Final code for the CS5344 augmentation task (NSL-KDD and UNSW-NB15). **One pipeline,
 `pipeline3.py`, produces both submissions**; only a few per-dataset hyperparameters differ.
 
-| Dataset | Kaggle public AUPRC | File |
-|---|---|---|
-| NSL-KDD | **0.92935** | `pipeline3_output/submission_NSL-KDD_p3.csv` (40,000 rows) |
-| UNSW-NB15 | **0.58821** | `pipeline3_output/submission_UNSW-NB15_p3.csv` (70,000 rows) |
+| Dataset | Kaggle public AUPRC | Kaggle private AUPRC | File |
+|---|---|---|---|
+| NSL-KDD | 0.92935 | **0.94973** | `final_pipeline3_output_group13/submission_NSL-KDD_p3.csv` (40,000 rows) |
+| UNSW-NB15 | 0.58821 | **0.69561** | `final_pipeline3_output_group13/submission_UNSW-NB15_p3.csv` (70,000 rows) |
+
+Public = hidden validation rows; private = hidden test rows, which add attack types no submission
+could be tuned on. Both scores rose on the private board.
 
 Reruns are byte-identical on the same machine. Across machines, floating-point differences (CPU, BLAS,
 library versions) change the generated rows, so the UNSW-NB15 column plan learned in the 0.57760 run is
@@ -18,8 +21,8 @@ swap is off. With these settings a second machine scored 0.92935 / 0.58821; re-l
 
 ```bash
 pip install -r requirements.txt
-cp ../data/train_NSL-KDD.csv ../data/train_UNSW-NB15.csv .   # or keep them in the working directory
-python pipeline3.py                    # both datasets -> pipeline3_output/   (~ 10-15 min per dataset, 2-core CPU)
+cp ../../data/train_NSL-KDD.csv ../../data/train_UNSW-NB15.csv .   # training files from the repo's data/ folder
+python pipeline3.py                    # both datasets -> final_pipeline3_output_group13/   (~ 10-15 min per dataset, 2-core CPU)
 P3_DATASETS=UNSW-NB15 python pipeline3.py
 P3_MODE=final+evaluate python pipeline3.py   # + Pipeline 1 vs 3 on held-out attack types
 P3_FAST=1 python pipeline3.py         # smoke test, ~ 8 min for both (smaller learning; not the submission)
@@ -144,7 +147,9 @@ public board is about +/-0.005, and up to +/-0.01 for UNSW-NB15 reruns on differ
 | `check_ecod_rule.py` | Old vs exact ECOD rule against Kaggle-scored files (needs those CSVs locally) |
 | `p2_robustness.py` | Scores a learned plan on further held-out splits |
 | `gen_overfit.py` | The three known-type probes (negative result) |
-| `results/` | Metadata of the development runs (NSL-KDD 0.92960, UNSW-NB15 0.57760): settings, learned plan, SHA-256, dedupe counts; `results/pipeline2/` holds the Pipeline 2 runs |
 
 Most experiments take a dataset name and split rotations, e.g. `python exp_critics2.py UNSW-NB15 0 1 2`,
-and expect the training CSVs next to the scripts or in the working directory.
+and expect the training CSVs next to the scripts or in the working directory. `exp_discretize.py` reads the
+submission files from `pipeline3_output/` by default; run it with
+`P3_OUT=final_pipeline3_output_group13` to point it at the folder `pipeline3.py` writes.
+Generated CSVs and run metadata are not committed.
